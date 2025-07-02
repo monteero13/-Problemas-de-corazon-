@@ -1,0 +1,33 @@
+# Despliegue del modelo
+
+## Acceso a la Aplicación
+
+<iframe 
+  src="https://lfxuag-alberto-montero0solera.shinyapps.io/recursos/" 
+  width="100%" 
+  height="1400" 
+  style="border:none; overflow:auto;" 
+  scrolling="yes" 
+  frameborder="0">
+</iframe>
+
+
+
+## Guía de uso
+
+1. **Introducir los datos clínicos del paciente**  
+   Completa el formulario con la información clínica solicitada, como edad, sexo, tipo de dolor de pecho, presión arterial en reposo, colesterol, glucosa en ayunas, y otros parámetros relevantes. Estas variables han sido seleccionadas por el modelo como las más importantes para predecir el riesgo cardiovascular.
+
+2. **Lanzar la predicción**  
+   Haz clic en el botón **Predecir** para que el modelo calcule la probabilidad de que el paciente tenga enfermedad cardiovascular.
+
+3. **Interpretar el resultado**  
+   El resultado se mostrará en una barra de progreso que indica el porcentaje de riesgo, acompañado de un mensaje que clasifica el riesgo como bajo, moderado o alto.
+
+4. **Reiniciar o modificar los datos**  
+   Puedes cambiar los valores de entrada y volver a ejecutar la predicción para explorar diferentes escenarios y observar cómo varía el riesgo.
+
+---
+
+**Importante:**  
+Esta aplicación es una herramienta de apoyo que **no reemplaza el diagnóstico ni la evaluación médica profesional**. Los resultados deben interpretarse siempre junto con una valoración clínica completa y no deben usarse como único criterio para la toma de decisiones médicas.

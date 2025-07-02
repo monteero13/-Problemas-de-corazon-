@@ -1,0 +1,13 @@
+# Conclusiones
+
+## Revisión breve del objetivo y resultados clave.
+
+El objetivo principal de este proyecto fue desarrollar un modelo predictivo capaz de estimar la probabilidad de enfermedad cardiovascular en pacientes, a partir de variables clínicas y demográficas. Tras un análisis exploratorio detallado y la implementación de distintos enfoques de aprendizaje automático y profundo, se identificó a las Redes Neuronales Artificiales, sin necesidad de selección previa de variables, como el modelo con mejor rendimiento, alcanzando un valor AUC de 0.825. Este resultado refleja una capacidad predictiva sólida y superior a la de otros modelos evaluados.
+
+## Conclusión sobre utilidad clínica del modelo predictivo.
+
+Desde el punto de vista clínico, el modelo propuesto representa una herramienta útil para apoyar la toma de decisiones médicas, ya que permite estimar con alta precisión el riesgo de enfermedad cardiovascular en pacientes, utilizando variables habitualmente disponibles en la práctica médica. Su capacidad para integrar múltiples factores de riesgo y detectar patrones complejos no lineales lo convierte en un recurso valioso para la estratificación temprana del riesgo, especialmente en entornos donde se requiere rapidez y eficiencia diagnóstica.
+
+## Recomendaciones de uso e implementación.
+
+Se recomienda la implementación del modelo en forma de aplicación web, como se ha llevado a cabo, para facilitar su acceso y utilización por parte de profesionales de la salud. No obstante, se sugiere acompañar su uso con una interpretación clínica cuidadosa, especialmente en casos límite, y no sustituirlo por completo por el juicio médico. Asimismo, sería conveniente validar el modelo con datos de otras instituciones para garantizar su generalización y confiabilidad. Finalmente, integrar funcionalidades explicativas en la interfaz —como la visualización del peso de cada variable en la predicción— podría aumentar la transparencia y aceptación del modelo en la práctica clínica.

@@ -1,0 +1,1963 @@
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(plotly)
+library(ggplot2)
+library(MASS)
+library(dplyr)
+library(readxl)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(stringr)
+library(pROC)
+library(ResourceSelection)
+library(caret)
+library(nnet)
+library(e1071)
+library(rpart)
+library(glmnet)
+library(DT)
+
+
+
+visualizar_variable <- function(data, variable) {
+  var_data <- data[[variable]]
+  
+  if (is.numeric(var_data)) {
+    
+    # Histograma
+    fig1 <- plot_ly(
+      x = var_data, type = 'histogram',
+      marker = list(
+        color = '#00AEDA',
+        line = list(color = '#002859', width = 2)
+      ),
+      autobinx = FALSE,
+      xbins = list(
+        start = floor(min(var_data, na.rm = TRUE)),
+        end = ceiling(max(var_data, na.rm = TRUE)),
+        size = 1
+      )
+    ) %>%
+      layout(
+        xaxis = list(title = "Valor"),
+        yaxis = list(title = "Frecuencia")
+      )
+    
+    # Boxplot
+    fig2 <- plot_ly(
+      y = var_data, type = 'box',
+      fillcolor = '#00AEDA',
+      line = list(color = '#002859')
+    ) %>%
+      layout(
+        yaxis = list(title = "Valor")
+      )
+    
+    # Mostrar uno debajo del otro
+    subplot(fig1, fig2, nrows = 2, margin = 0.1, titleX = TRUE, titleY = TRUE)
+    
+  } else {
+    # Si es categórica
+    freq_table <- table(var_data)
+    x <- names(freq_table)
+    y <- as.numeric(freq_table)
+    text <- as.character(y)
+    
+    data_plot <- data.frame(x, y, text)
+    
+    fig <- plot_ly(
+      data_plot,
+      x = ~x, y = ~y, type = 'bar',
+      text = ~text, textposition = 'auto',
+      marker = list(
+        color = '#00AEDA',
+        line = list(color = '#002859', width = 1.5)
+      )
+    ) %>%
+      layout(
+        xaxis = list(title = "Categoría"),
+        yaxis = list(title = "Frecuencia")
+      )
+    
+    fig
+  }
+}
+
+
+detectar_asociacion <- function(data, objetivo, variable) {
+
+  resultados <- character()
+  grafico <- NULL
+
+  resultados <- c(resultados, paste("Analizando relación entre", variable, "y", objetivo))
+
+  var_obj <- data[[objetivo]]
+  var_ind <- data[[variable]]
+
+  # Ambos categóricos
+  if ((is.factor(var_obj) || is.character(var_obj)) &&
+      (is.factor(var_ind) || is.character(var_ind))) {
+    
+    data <- data %>% 
+      filter(!is.na(.data[[objetivo]]), !is.na(.data[[variable]])) %>%
+      mutate(across(c(all_of(objetivo), all_of(variable)), as.factor))
+
+    data <- data %>%
+      rename(objetivo_var = all_of(objetivo), variable_indep = all_of(variable))
+    
+    tabla <- xtabs(~ objetivo_var + variable_indep, data = data)
+
+    if (any(tabla < 5)) {
+      test <- fisher.test(tabla, simulate.p.value = TRUE)
+      test_name <- "Test de Fisher"
+      estadistico <- "No disponible"
+    } else {
+      test <- chisq.test(tabla)
+      test_name <- "Chi-cuadrado"
+      estadistico <- round(test$statistic, 4)
+    }
+
+
+    resultados <- c(resultados,
+                    paste(test_name, "- Estadístico:", estadistico),
+                    paste("p-valor:", format.pval(test$p.value, digits = 10, eps = .Machine$double.eps)),
+                    "Intervalos de confianza: no aplicable para este test.")
+
+    conclusion <- ifelse(test$p.value < 0.05,
+                         "Existe asociación estadísticamente significativa entre las variables.",
+                         "No se detecta asociación estadísticamente significativa entre las variables.")
+    resultados <- c(resultados, conclusion)
+
+    grafico <- ggplot(data, aes(x = variable_indep, fill = objetivo_var)) +
+      geom_bar(position = "fill", color = "#002859") +
+      scale_fill_manual(values = c("#00AEDA", "#002859")) +
+      labs(y = "Proporción", x = variable, fill = objetivo,
+           title = paste("Distribución de", objetivo, "por", variable)) +
+      theme_minimal()
+
+  # Categórica vs numérica
+  } else if ((is.factor(var_obj) || is.character(var_obj)) &&
+             is.numeric(var_ind)) {
+
+    data <- data %>% filter(!is.na(.data[[objetivo]]), !is.na(.data[[variable]]))
+    data[[objetivo]] <- as.factor(data[[objetivo]])
+    niveles <- levels(data[[objetivo]])
+
+    # Evaluar normalidad por grupo
+    p_norm <- by(data[[variable]], data[[objetivo]], function(x) shapiro.test(x)$p.value)
+    es_normal <- all(p_norm > 0.05)
+
+    resultados <- c(resultados,
+                    paste("p-valor de Shapiro-Wilk por grupo:", 
+                          paste(names(p_norm), 
+                                format.pval(p_norm, digits = 10, eps = .Machine$double.eps), 
+                                collapse = ", ")))
+
+    if (length(niveles) == 2) {
+      if (es_normal) {
+        test <- t.test(data[[variable]] ~ data[[objetivo]])
+        test_name <- "t de Student"
+        intervalo <- paste0("[", round(test$conf.int[1], 4), ", ", round(test$conf.int[2], 4), "]")
+      } else {
+        test <- wilcox.test(data[[variable]] ~ data[[objetivo]])
+        test_name <- "Mann-Whitney (Wilcoxon)"
+        intervalo <- "No disponible"
+      }
+    } else {
+      if (es_normal) {
+        test <- aov(data[[variable]] ~ data[[objetivo]])
+        resumen <- summary(test)
+        test_name <- "ANOVA"
+        estadistico <- resumen[[1]][["F value"]][1]
+        pvalor <- resumen[[1]][["Pr(>F)"]][1]
+        intervalo <- "No disponible"
+      } else {
+        test <- kruskal.test(data[[variable]] ~ data[[objetivo]])
+        test_name <- "Kruskal-Wallis"
+        estadistico <- test$statistic
+        pvalor <- test$p.value
+        intervalo <- "No disponible"
+      }
+    }
+
+    if (!exists("estadistico")) estadistico <- test$statistic
+    if (!exists("pvalor")) pvalor <- test$p.value
+
+    resultados <- c(resultados,
+                    paste("Prueba:", test_name),
+                    paste("Estadístico:", round(estadistico, 4)),
+                    paste("p-valor:", format.pval(pvalor, digits = 10, eps = .Machine$double.eps)),
+                    paste("Intervalo de confianza:", intervalo))
+
+    conclusion <- ifelse(pvalor < 0.05,
+                         "Existe asociación estadísticamente significativa entre las variables.",
+                         "No se detecta asociación estadísticamente significativa entre las variables.")
+    resultados <- c(resultados, conclusion)
+
+    grafico <- ggplot(data, aes_string(x = objetivo, y = variable, fill = objetivo)) +
+      geom_boxplot(outlier.color = "#002859", color = "#002859") +
+      scale_fill_manual(values = c("#00AEDA", "#002859")) +
+      labs(title = paste("Distribución de", variable, "según", objetivo),
+           x = objetivo, y = variable) +
+      theme_minimal()
+
+  # Ambos numéricos
+  } else if (is.numeric(var_obj) && is.numeric(var_ind)) {
+    data <- data %>% filter(!is.na(.data[[objetivo]]), !is.na(.data[[variable]]))
+
+    norm_obj <- shapiro.test(data[[objetivo]])$p.value > 0.05
+    norm_ind <- shapiro.test(data[[variable]])$p.value > 0.05
+
+    metodo <- ifelse(norm_obj && norm_ind, "pearson", "spearman")
+    test <- cor.test(data[[objetivo]], data[[variable]], method = metodo)
+
+    resultados <- c(resultados,
+                    paste("Correlación", metodo, "- Estadístico:", round(test$statistic, 4)),
+                    paste("p-valor:", format.pval(test$p.value, digits = 10, eps = .Machine$double.eps)),
+                    paste("Coeficiente de correlación:", round(test$estimate, 4)),
+                    paste("Intervalo de confianza:",
+                          ifelse(!is.null(test$conf.int),
+                                 paste0("[", round(test$conf.int[1], 4), ", ", round(test$conf.int[2], 4), "]"),
+                                 "No disponible")))
+
+    conclusion <- ifelse(test$p.value < 0.05,
+                         "Existe correlación estadísticamente significativa entre las variables.",
+                         "No se detecta correlación estadísticamente significativa entre las variables.")
+    resultados <- c(resultados, conclusion)
+
+    grafico <- ggplot(data, aes_string(x = variable, y = objetivo)) +
+      geom_point(alpha = 0.5, color = "#00AEDA") +
+      geom_smooth(method = "lm", se = FALSE, color = "#002859") +
+      labs(title = paste("Relación entre", variable, "y", objetivo),
+           x = variable, y = objetivo) +
+      theme_minimal()
+  }
+
+  list(texto = resultados, grafico = grafico)
+}
+
+
+evaluar_modelo <- function(modelo, datos_validacion, variable_respuesta, umbral = 0.5) {
+  # Obtener las variables que necesita el modelo
+  vars_modelo <- all.vars(formula(modelo))[-1]
+
+  # Asegurar que los niveles de factores coincidan
+  datos_validacion_filtrados <- datos_validacion[, c(variable_respuesta, vars_modelo)]
+
+  for (var in vars_modelo) {
+    if (is.factor(model.frame(modelo)[[var]])) {
+      datos_validacion_filtrados[[var]] <- factor(
+        datos_validacion_filtrados[[var]],
+        levels = levels(model.frame(modelo)[[var]])
+      )
+    }
+  }
+
+  # Predicciones
+  probs <- predict(modelo, newdata = datos_validacion_filtrados, type = "response")
+  obs <- datos_validacion_filtrados[[variable_respuesta]]
+
+  # CURVA ROC
+  roc_obj <- roc(obs, probs)
+  plot(roc_obj, main = paste("Curva ROC - AUC:", round(auc(roc_obj), 3)), col = "#00AEDA", lwd = 2)
+
+  # CLASIFICACIÓN BINARIA CON UMBRAL
+  pred <- ifelse(probs > umbral, "Sí", "No")
+  pred <- factor(pred, levels = levels(obs))
+
+  # CALIBRACIÓN
+  df_cal <- data.frame(obs = as.numeric(obs == "Sí"), pred = probs)
+  df_cal$pred_bin <- cut(df_cal$pred, breaks = seq(0, 1, by = 0.1), include.lowest = TRUE)
+
+  # Cálculo de proporción observada y media de probabilidad predicha por bin
+  cal_plot <- aggregate(obs ~ pred_bin, data = df_cal, mean)
+  cal_plot$pred_mean <- aggregate(pred ~ pred_bin, data = df_cal, mean)$pred
+
+  # Gráfico de calibración ajustado
+  print(
+    ggplot(cal_plot, aes(x = pred_mean, y = obs)) +
+      geom_line(color = "#00AEDA", linewidth = 1.5) +
+      geom_point(color = "#002859", size = 2) +
+      geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "#002859") +
+      labs(
+        x = "Probabilidad predicha",
+        y = "Proporción observada"
+      ) +
+      coord_fixed(ratio = 1, xlim = c(0, 1), ylim = c(0, 1)) +
+      theme_minimal()
+  )
+}
+
+
+confusion_matrix_plot <- function(modelo, data, evento, threshold = 0.5) {
+
+  # Predecir probabilidades y clasificar según umbral
+  prob_pred <- predict(modelo, newdata = data, type = "response")
+  pred_clase <- ifelse(prob_pred >= threshold, 1, 0)
+  
+  # Variable real (convertir si es necesario)
+  real <- data[[evento]]
+  if (!all(real %in% c(0, 1))) {
+    real <- as.numeric(as.factor(real)) - 1
+  }
+  
+  # Crear data frame con real y predicho
+  df_cm <- data.frame(Real = factor(real, levels = c(1, 0)),
+                      Predicho = factor(pred_clase, levels = c(1, 0)))
+  
+  # Contar combinaciones
+  cm_table <- df_cm %>%
+    count(Real, Predicho)
+  
+  # Graficar con ggplot2
+  ggplot(cm_table, aes(x = Real, y = Predicho)) +
+    geom_tile(aes(fill = n), color = "#002859", linewidth = 1) +
+    geom_text(aes(label = n), color = "white", size = 6) +
+    scale_fill_gradient(low = "#00AEDA", high = "#00AEDA") +
+    labs(title = "Matriz de Confusión",
+         x = "Valor Real", y = "Valor Predicho") +
+    theme_minimal() +
+    theme(legend.position = "none",
+          plot.title = element_text(hjust = 0.5, face = "bold"),
+          axis.title = element_text(face = "bold"))
+}
+
+
+CV_5x2 <- function(datos, algoritmo, formula, tecnica_seleccion, hiperparametros) {
+  set.seed(123)
+  k_outer <- 5
+  k_inner <- 2
+  folds_outer <- createFolds(datos$Enfermedad, k = k_outer, list = TRUE)
+
+  resultados_auc <- numeric(k_outer)
+  resultados_sensibilidad <- numeric(k_outer)
+  resultados_accuracy <- numeric(k_outer)
+  resultados_especificidad <- numeric(k_outer)
+
+  for (i_outer in 1:k_outer) {
+    test_indices_outer <- folds_outer[[i_outer]]
+    train_indices_outer <- setdiff(1:nrow(datos), test_indices_outer)
+
+    datos_entrenamiento_outer <- datos[train_indices_outer, ]
+    datos_test_outer <- datos[test_indices_outer, ]
+
+    folds_inner <- createFolds(datos_entrenamiento_outer$Enfermedad, k = k_inner, list = TRUE)
+
+    historial_resultados <- if (nrow(hiperparametros) == 0) {
+      data.frame(auc_score = numeric(0))
+    } else {
+      setNames(data.frame(matrix(ncol = ncol(hiperparametros) + 1, nrow = 0)),
+               c(colnames(hiperparametros), "auc_score"))
+    }
+
+    mejor_modelo <- NULL
+    mayor_auc <- -Inf
+
+    for (i_inner in 1:k_inner) {
+      if (is.null(tecnica_seleccion)) {
+        test_indice_inner <- folds_inner[[i_inner]]
+        train_indices_inner <- setdiff(1:nrow(datos_entrenamiento_outer), test_indice_inner)
+
+        datos_entrenamiento_inner <- datos_entrenamiento_outer[train_indices_inner, ]
+        datos_test_inner <- datos_entrenamiento_outer[test_indice_inner, ]
+      } else {
+        variables_seleccionadas <- tecnica_seleccion(datos_entrenamiento_outer, "Enfermedad")
+        seleccion <- c("Enfermedad", variables_seleccionadas)
+        datos_filtrados <- datos_entrenamiento_outer[, seleccion, drop = FALSE]
+
+        idx_val_interno <- folds_inner[[i_inner]]
+        idx_entrenamiento_interno <- setdiff(seq_len(nrow(datos_filtrados)), idx_val_interno)
+
+        datos_entrenamiento_inner <- datos_filtrados[idx_entrenamiento_interno, ]
+        datos_test_inner <- datos_filtrados[idx_val_interno, ]
+      }
+
+      for (fila in 1:max(1, nrow(hiperparametros))) {
+        h <- if (nrow(hiperparametros) > 0) hiperparametros[fila, ] else NULL
+
+        modelo_actual <- tryCatch({
+          if (identical(algoritmo, glm)) {
+            algoritmo(formula = formula, data = datos_entrenamiento_inner, family = binomial)
+          } else if (identical(algoritmo, svm)) {
+            do.call(algoritmo, c(list(formula = formula, data = datos_entrenamiento_inner,type = "C-classification", probability = TRUE), as.list(h)))
+          } else if (identical(algoritmo, nnet)){
+            do.call(algoritmo, c(list(formula = formula, data = datos_entrenamiento_inner, trace = FALSE), as.list(h)))
+          } else {
+            do.call(algoritmo, c(list(formula = formula, data = datos_entrenamiento_inner), as.list(h)))
+          }
+        }, error = function(e) NULL)
+
+        if (is.null(modelo_actual)) next
+
+        pred_prob <- tryCatch({
+          if (identical(algoritmo, nnet)) {
+            predict(modelo_actual, newdata = datos_test_inner, type = "raw")
+          } else if (identical(algoritmo, svm)) {
+            attr(predict(modelo_actual, newdata = datos_test_inner, probability = TRUE), "probabilities")[, "Sí"]
+          } else if (identical(algoritmo, rpart)) {
+            predict(modelo_actual, newdata = datos_test_inner, type = "prob")[, "Sí"]
+          } else {
+            predict(modelo_actual, newdata = datos_test_inner, type = "response")
+          }
+        }, error = function(e) NULL)
+
+        if (is.null(pred_prob) || length(pred_prob) != nrow(datos_test_inner)) next
+
+        etiquetas <- ifelse(datos_test_inner$Enfermedad == "Sí", 1, 0)
+        if (length(etiquetas) != length(pred_prob)) next
+
+        curva_roc <- roc(response = etiquetas, predictor = pred_prob)
+        valor_auc <- as.numeric(auc(curva_roc))
+
+        if (nrow(hiperparametros) == 0) {
+          historial_resultados <- rbind(historial_resultados, data.frame(auc_score = valor_auc))
+        } else {
+          historial_resultados <- rbind(historial_resultados, cbind(h, auc_score = valor_auc))
+        }
+
+        if (valor_auc > mayor_auc) {
+          mejor_modelo <- modelo_actual
+          mayor_auc <- valor_auc
+        }
+      }
+    }
+
+    # Detectar tipo correcto de predicción en outer
+    predicciones_test_outer <- tryCatch({
+      if (identical(algoritmo, nnet)) {
+        predict(mejor_modelo, newdata = datos_test_outer, type = "raw")
+      } else if (identical(algoritmo, svm)) {
+        attr(predict(mejor_modelo, newdata = datos_test_outer, probability = TRUE), "probabilities")[, "Sí"]
+      } else if (identical(algoritmo, rpart)) {
+        predict(mejor_modelo, newdata = datos_test_outer, type = "prob")[, "Sí"]
+      } else {
+        predict(mejor_modelo, newdata = datos_test_outer, type = "response")
+      }
+    }, error = function(e) NULL)
+
+    clases_predichas <- ifelse(predicciones_test_outer >= 0.5, "Sí", "No")
+    etiquetas_outer <- ifelse(datos_test_outer$Enfermedad == "Sí", 1, 0)
+
+    roc_obj <- roc(etiquetas_outer, predicciones_test_outer)
+    resultados_auc[i_outer] <- as.numeric(auc(roc_obj))
+    resultados_sensibilidad[i_outer] <- sum(clases_predichas == "Sí" & datos_test_outer$Enfermedad == "Sí") / sum(datos_test_outer$Enfermedad == "Sí")
+    resultados_accuracy[i_outer] <- mean(clases_predichas == datos_test_outer$Enfermedad)
+    resultados_especificidad[i_outer] <- sum(clases_predichas == "No" & datos_test_outer$Enfermedad == "No") / sum(datos_test_outer$Enfermedad == "No")
+  }
+
+  # Tabla final
+  tabla_metricas <- data.frame(
+    Pliegue = 1:k_outer,
+    AUC = round(resultados_auc, 3),
+    Accuracy = round(resultados_accuracy, 3),
+    Recall = round(resultados_sensibilidad, 3),
+    Specificity = round(resultados_especificidad, 3)
+  )
+
+  tabla_metricas_completa <- rbind(tabla_metricas,
+                                   c("Media",
+                                     round(mean(resultados_auc, na.rm = TRUE), 3),
+                                     round(mean(resultados_accuracy, na.rm = TRUE), 3),
+                                     round(mean(resultados_sensibilidad, na.rm = TRUE), 3),
+                                     round(mean(resultados_especificidad, na.rm = TRUE), 3)))
+
+  kable(tabla_metricas_completa, align = "c") %>%
+    kable_styling(full_width = FALSE, font_size = 14,
+                  bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+    row_spec(0, background = "#002859", color = "white") %>%
+    row_spec(1:(nrow(tabla_metricas_completa)-1), background = "#00AEDA") %>%
+    row_spec(nrow(tabla_metricas_completa), bold = TRUE, background = "#007A99", color = "white")
+}
+
+```
+
+# Materiales y Métodos
+
+## Descripción del conjunto de datos
+
+```{r, eval=FALSE}
+data <- read.csv("recursos/conjunto_corazon_final_11.csv")
+data$sexo <- as.factor(data$sexo)
+data$tipo_dolor_pecho <- as.factor(data$tipo_dolor_pecho)
+data$glucosa_ayunas <- as.factor(data$glucosa_ayunas)
+data$pendiente_st <- as.factor(data$pendiente_st)
+data$Enfermedad <- as.factor(data$Enfermedad)
+data$angina_ejercicio <- as.factor(data$angina_ejercicio)
+data$ecg_reposo <- as.factor(data$ecg_reposo)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+data <- read.csv("recursos/conjunto_corazon_final_11.csv")
+data$sexo <- as.factor(data$sexo)
+data$tipo_dolor_pecho <- as.factor(data$tipo_dolor_pecho)
+data$glucosa_ayunas <- as.factor(data$glucosa_ayunas)
+data$pendiente_st <- as.factor(data$pendiente_st)
+data$Enfermedad <- as.factor(data$Enfermedad)
+data$angina_ejercicio <- as.factor(data$angina_ejercicio)
+data$ecg_reposo <- as.factor(data$ecg_reposo)
+```
+
+::: panel-tabset
+### Edad
+
+Edad del paciente en años.
+
+### Sexo
+
+Sexo del paciente.
+
+### Tipo de dolor de pecho
+
+Tipo de dolor torácico.
+
+### Presión arterial en reposo
+
+Presión arterial en reposo en mmHg.
+
+### Colesterol
+
+Nivel de colesterol sérico en mg/dL.
+
+### Glucosa en ayunas
+
+Indica si el nivel de glucosa en ayunas es mayor a 120 mg/dL.
+
+### Electrocardiograma en reposo
+
+Resultados del electrocardiograma en reposo
+
+### Frecuencia cardíaca máxima
+
+Frecuencia cardíaca máxima alcanzada durante el ejercicio.
+
+### Presencia de angina inducida por ejercicio
+
+Presencia o ausencia de angina durante el ejercicio.
+
+### Descenso del segmento ST
+
+Depresión del segmento ST inducida por el ejercicio respecto al reposo.
+
+### Pendiente del ST
+
+Pendiente del segmento ST en el ECG durante el esfuerzo.
+
+### Enfermedad
+
+Diagnóstico final de enfermedad cardiovascular.
+:::
+
+A continuación se ha procedido con la detección automática del tipo de variable implementando una función.
+
+```{r, message=FALSE}
+# Crear vector con nombres y tipos
+tipos <- sapply(data, function(x) {
+  if (is.numeric(x)) {
+    "Numérica"
+  } else if (is.factor(x) || is.character(x)) {
+    "Categórica"
+  } else {
+    "Otro"
+  }
+})
+
+# Crear tabla como tibble
+tabla_vars <- tibble(
+  Variable = names(tipos),
+  Tipo = tipos
+)
+
+# Mostrar la tabla con formato
+tabla_vars %>%
+  kable("html", caption = "Tipo de cada variable") %>%
+  kable_styling(full_width = FALSE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "var(--color-primario)") %>%
+  row_spec(1:nrow(tabla_vars),color = "var(--color-texto-claro)" , background = "var(--color-secundario)")
+```
+
+::: panel-tabset
+## Variables numéricas
+
+::: panel-tabset
+### Edad {.panel-tabset}
+
+```{r, eval=FALSE}
+summary(data$edad)
+```
+
+```{r, echo=FALSE}
+summary(data$edad)
+```
+
+```{r, warning=FALSE}
+visualizar_variable(data,"edad")
+```
+
+### Presión en reposo {.panel-tabset}
+
+```{r, eval=FALSE}
+summary(data$presion_reposo)
+```
+
+```{r, echo=FALSE}
+summary(data$presion_reposo)
+```
+
+```{r,warning=FALSE}
+visualizar_variable(data,"presion_reposo")
+```
+
+### Colesterol {.panel-tabset}
+
+```{r, eval=FALSE}
+summary(data$colesterol)
+```
+
+```{r, echo=FALSE}
+summary(data$colesterol)
+```
+
+```{r, warning=FALSE}
+visualizar_variable(data,"colesterol")
+```
+
+### Frecuencia cardíaca máxima {.panel-tabset}
+
+```{r, eval=FALSE}
+summary(data$frec_max)
+```
+
+```{r, echo=FALSE}
+summary(data$frec_max)
+```
+
+```{r, warning=FALSE}
+visualizar_variable(data,"frec_max")
+```
+
+### Descenso del segmento ST {.panel-tabset}
+
+```{r, eval=FALSE}
+summary(data$descenso_st)
+```
+
+```{r, echo=FALSE}
+summary(data$descenso_st)
+```
+
+```{r, warning=FALSE}
+visualizar_variable(data,"descenso_st")
+```
+:::
+
+## Variables categóricas
+
+::: panel-tabset
+### Sexo
+
+```{r}
+visualizar_variable(data,"sexo")
+```
+
+### Tipo de dolor de pecho
+
+```{r}
+visualizar_variable(data,"tipo_dolor_pecho")
+```
+
+### Electrocardiograma en reposo {.panel-tabset}
+
+```{r}
+visualizar_variable(data,"ecg_reposo")
+```
+
+### Glucosa en ayunas
+
+```{r}
+visualizar_variable(data,"glucosa_ayunas")
+```
+
+### Presencia de angina inducida por ejercicio {.panel-tabset}
+
+```{r}
+visualizar_variable(data,"angina_ejercicio")
+```
+
+### Pendiente del ST
+
+```{r}
+visualizar_variable(data,"pendiente_st")
+```
+
+### Enfermedad
+
+```{r}
+visualizar_variable(data,"Enfermedad")
+```
+:::
+:::
+
+Como vemos, el conjunto de datos requiere de una limpieza, filtrado y recodificación de datos puesto que muchos de ellos se encuentran vacíos, o bien, anotados de distinta forma pese a querer representar lo mismo.
+
+## Preprocesamiento de datos
+
+Primeramente se procede con la recodificación de las variables categóricas junto al tratamiento de valores ausentes a través de la imputación de estos valores perdidos y la eliminación de valores atípicos. Esta recodificación se debe a que algunas clases interpretaban los mismos resultados pero se encontraban recogidas con distintos nombres.
+
+```{r, message=FALSE}
+data <- data %>%
+  mutate(          
+    sexo = str_to_lower(sexo),               # Pasa todo a minúsculas
+    sexo = case_when(                        # Recodifica los valores
+      sexo %in% c("mujer", "muje", "femenino") ~ "Mujer",
+      sexo %in% c("varón", "varon", "hombre", "masculino") ~ "Hombre",
+      TRUE ~ NA_character_
+    ),
+    sexo = factor(sexo, levels = c("Mujer", "Hombre"))
+  )
+
+data <- data %>%
+  mutate(
+    glucosa_ayunas = str_trim(str_to_lower(glucosa_ayunas)),  # minúsculas y sin espacios
+    glucosa_ayunas = na_if(glucosa_ayunas, ""),               # "" a NA
+    glucosa_ayunas = case_when(
+      glucosa_ayunas %in% c("no", "n", "n0") ~ "No",
+      glucosa_ayunas %in% c("si", "sí", "s") ~ "Sí",
+      TRUE ~ NA_character_
+    ),
+    glucosa_ayunas = factor(glucosa_ayunas, levels = c("No", "Sí"))
+  )
+
+data <- data %>%
+  mutate(
+    pendiente_st = str_trim(str_to_lower(pendiente_st)),  # minúsculas + quita espacios
+    pendiente_st = na_if(pendiente_st, ""),               # vacíos a NA
+    pendiente_st = case_when(
+      pendiente_st %in% c("asc", "ascendente") ~ "ascendente",
+      pendiente_st %in% c("desc", "descend", "descendente") ~ "descendente",
+      pendiente_st %in% c("flat", "plana") ~ "plana",
+      TRUE ~ NA_character_
+    ),
+    pendiente_st = factor(pendiente_st, levels = c("ascendente", "plana", "descendente"))
+  )
+
+# Función para calcular la moda
+Mode <- function(x) {
+  ux <- na.omit(x)
+  if (length(ux) == 0) return(NA)
+  tbl <- table(ux)
+  return(names(tbl)[which.max(tbl)])
+}
+
+# Función para eliminar valores atípicos en una variable numérica
+eliminar_valores_atipicos <- function(data, var_name) {
+  var <- data[[var_name]]
+  Q1 <- quantile(var, 0.25, na.rm = TRUE)
+  Q3 <- quantile(var, 0.75, na.rm = TRUE)
+  IQR_val <- Q3 - Q1
+  lim_inf <- Q1 - 1.5 * IQR_val
+  lim_sup <- Q3 + 1.5 * IQR_val
+  data[var >= lim_inf & var <= lim_sup | is.na(var), ]
+}
+
+# --- Limpieza específica para Enfermedad ---
+
+# Asegurarse de que sea character y limpiar entradas invisibles
+data$Enfermedad <- as.character(data$Enfermedad)
+data$Enfermedad <- trimws(data$Enfermedad)  # elimina espacios
+data$Enfermedad[data$Enfermedad == ""] <- NA  # reemplaza "" por NA
+
+# Imputar NA en Enfermedad con la moda
+moda_enfermedad <- Mode(data$Enfermedad)
+data$Enfermedad[is.na(data$Enfermedad)] <- moda_enfermedad
+data$Enfermedad <- factor(data$Enfermedad)
+
+# --- Imputación general ---
+
+# Imputar variables categóricas (factores) con la moda
+columnas_categoricas <- sapply(data, is.factor)
+data[columnas_categoricas] <- lapply(data[columnas_categoricas], function(x) {
+  x <- as.character(x)
+  x <- trimws(x)
+  x[x == ""] <- NA
+  moda <- Mode(x)
+  x[is.na(x)] <- moda
+  factor(x)
+})
+
+# Imputar variables numéricas con la media
+columnas_numericas <- sapply(data, is.numeric)
+for (var in names(data)[columnas_numericas]) {
+  media <- mean(data[[var]], na.rm = TRUE)
+  data[[var]][is.na(data[[var]])] <- media
+}
+
+# --- Eliminar valores atípicos en variables clave ---
+vars_outliers <- c("edad", "presion_reposo", "colesterol", "frec_max", "descenso_st")
+for (var in vars_outliers) {
+  data <- eliminar_valores_atipicos(data, var)
+}
+```
+
+A continuación, vamos a recodificar las variables numéricas que por estudios clínicos previos y procesos habituales suelen interpretar este tipo de variables como categóricas para un mejor funcionamiento de las variables.
+
+-   **Edad:**
+
+    -   `0-39`
+
+    -   `40-49`
+
+    -   `50-59`
+
+    -   `60-69`
+
+    -   `70-79`
+
+-   **Presencia de angina inducida por ejercicio:**
+
+    -   `1` -\> Sí
+
+    -   `0` -\> No
+
+-   **Electrocardiograma en reposo:**
+
+    -   `0` -\> Normal
+
+    -   `1` -\> Anormalidad en la onda ST-T
+
+    -   `2` -\> Hipertrofia ventricular izquierda
+
+-   **Tipo de dolor de pecho:**
+
+    -   `0/1` -\> Angina típica
+
+    -   `2` -\> Angina atípica
+
+    -   `3` -\> Dolor no anginoso
+
+    -   `4` -\> Asintomático
+
+La variable edad ha sido categorizada, siguiendo una práctica habitual en estudios epidemiológicos y clínicos, ya que facilita la interpretación y permite capturar posibles relaciones no lineales entre la edad y los desenlaces clínicos, tal como señala [@ROBERTAGE]. Asimismo, la variable que indica la presencia de angina inducida por el ejercicio presenta valores binarios (0 y 1), por lo que resulta apropiado recodificarla como "Sí" y "No" para una interpretación más clara y coherente. También, diversos estudios, como el de [@DETRANO1989304], señalan que la variable que representa el electrocardiograma en reposo suele categorizarse comúnmente para su análisis. Finalmente, estudios clínicos, como el de [@heart_disease_45], comentan la interpretación de los valores en el tipo de dolor de pecho de esta forma.
+
+```{r}
+
+data$edad <- cut(data$edad, breaks = c(-Inf, 39, 49, 59,69,79), labels = c("0-39", "40-49", "50-59", "60-69","70-79"))
+data$edad <- as.factor(data$edad)
+
+data <- data %>%
+  mutate(          
+    angina_ejercicio = case_when(                        # Recodifica los valores
+      angina_ejercicio %in% 0 ~ "No",
+      angina_ejercicio %in% 1 ~ "Sí",
+      TRUE ~ NA_character_
+    ),
+    angina_ejercicio = factor(angina_ejercicio, levels = c("No", "Sí"))
+  )
+
+data <- data %>%
+  mutate(          
+    ecg_reposo = case_when(                        # Recodifica los valores
+      ecg_reposo %in% 0 ~ "Normal",
+      ecg_reposo %in% 1 ~ "Anormalidad en la onda ST-T",
+      ecg_reposo %in% 2 ~ "Hipertrofia ventricular izquierda",
+      TRUE ~ NA_character_
+    ),
+    ecg_reposo = factor(ecg_reposo, levels = c("Normal", "Anormalidad en la onda ST-T", "Hipertrofia ventricular izquierda"))
+  )
+
+data <- data %>%
+  mutate(          
+    tipo_dolor_pecho = case_when(                        # Recodifica los valores
+      tipo_dolor_pecho %in% c(0,1) ~ "Angina típica",
+      tipo_dolor_pecho %in% 2 ~ "Angina atípica",
+      tipo_dolor_pecho %in% 3 ~ "Dolor no anginoso",
+      tipo_dolor_pecho %in% 4 ~ "Asintomático",
+      TRUE ~ NA_character_
+    ),
+    tipo_dolor_pecho = factor(tipo_dolor_pecho, levels = c("Angina típica", "Angina atípica", "Dolor no anginoso", "Asintomático"))
+  )
+```
+
+Tras esto, procedemos con la normalización de las variables numéricas para que estén en escalas comparables y así poder utilizarlas en técnicas de modelados que lo requieren.
+
+```{r}
+# Seleccionamos las variables numéricas
+variables_numericas <- sapply(data, is.numeric)
+datos_numericos <- data[, variables_numericas]
+
+# Normalizamos las variables numéricas
+datos_normalizados <- as.data.frame(scale(datos_numericos))
+
+# Combine normalized numeric variables with non-numeric variables
+data <- cbind(data[, !variables_numericas], datos_normalizados)
+```
+
+## Análisis exploratorio de datos
+
+Una vez ya preprocesado todo el dataset, podemos ver nuevamente los datos y los cambios conseguidos.
+
+::: panel-tabset
+### Variables numéricas
+
+::: panel-tabset
+#### Presión en reposo {.panel-tabset}
+
+```{r, eval=FALSE}
+summary(data$presion_reposo)
+```
+
+```{r, echo=FALSE}
+summary(data$presion_reposo)
+```
+
+```{r}
+visualizar_variable(data,"presion_reposo")
+```
+
+#### Colesterol {.panel-tabset}
+
+```{r, eval=FALSE}
+summary(data$colesterol)
+```
+
+```{r, echo=FALSE}
+summary(data$colesterol)
+```
+
+```{r}
+visualizar_variable(data,"colesterol")
+```
+
+#### Frecuencia cardíaca máxima {.panel-tabset}
+
+```{r, eval=FALSE}
+summary(data$frec_max)
+```
+
+```{r, echo=FALSE}
+summary(data$frec_max)
+```
+
+```{r}
+visualizar_variable(data,"frec_max")
+```
+
+#### Descenso del segmento ST {.panel-tabset}
+
+```{r, eval=FALSE}
+summary(data$descenso_st)
+```
+
+```{r, echo=FALSE}
+summary(data$descenso_st)
+```
+
+```{r}
+visualizar_variable(data,"descenso_st")
+```
+:::
+
+### Variables categóricas
+
+::: panel-tabset
+#### Edad
+
+```{r}
+visualizar_variable(data,"edad")
+```
+
+#### Sexo
+
+```{r}
+visualizar_variable(data,"sexo")
+```
+
+#### Tipo de dolor de pecho
+
+```{r}
+visualizar_variable(data,"tipo_dolor_pecho")
+```
+
+#### Glucosa en ayunas
+
+```{r}
+visualizar_variable(data,"glucosa_ayunas")
+```
+
+#### Electrocardiograma en reposo {.panel-tabset}
+
+```{r}
+visualizar_variable(data,"ecg_reposo")
+```
+
+#### Presencia de angina inducida por ejercicio {.panel-tabset}
+
+```{r}
+visualizar_variable(data,"angina_ejercicio")
+```
+
+#### Pendiente del ST
+
+```{r}
+visualizar_variable(data,"pendiente_st")
+```
+
+#### Enfermedad
+
+```{r}
+visualizar_variable(data,"Enfermedad")
+```
+:::
+:::
+
+Ahora buscaremos encontrar asociaciones entre las variables predictoras y la variable objetivo `Enfermedad` con un **análisis bivariante**. Para esto, se ha implementado una función que automatiza todo este proceso que para quien no entienda de esto se explicará a continuación.
+
+### Explicación teórica - Análisis bivariante
+
+Antes de comenzar con el análisis estadístico, es fundamental comprender qué tipo de variables tenemos y cómo tratarlas según su naturaleza. Las técnicas estadísticas que se aplican varían dependiendo de si las variables son **categóricas** o **numéricas**.
+
+#### Relación entre dos variables **categóricas**
+
+Para analizar la relación entre dos variables categóricas, se comienza generando una **tabla de contingencia**, que nos muestra cuántas observaciones hay en cada combinación de categorías.
+
+Dependiendo del número de observaciones en las celdas de la tabla, se elige uno de estos tests:
+
+-   `Si algún valor < 5` → Test de Fisher
+
+-   `Si todos los valores ≥ 5` → Test Chi-Cuadrado
+
+Luego, se interpreta el resultado a través del **p-valor**:
+
+::: {.callout-tip appearance="simple" icon="false"}
+### Interpretación del p-valor
+
+-   Si **p \< 0.05**, se rechaza la hipótesis nula → **Existe asociación estadística** entre las variables.
+
+<!-- -->
+
+-   Si **p ≥ 0.05**, no se rechaza la hipótesis nula → **No hay evidencia de asociación.**
+:::
+
+#### Relación entre una variable **categórica** y una **numérica**
+
+En este caso, el tipo de test dependerá de si la variable numérica sigue una distribución normal. Esto se evalúa con el **test de Shapiro-Wilk**:
+
+-   `Si p < 0.05` → No hay normalidad → Test de Wilcoxon
+
+-   `Si p ≥ 0.05` → Hay normalidad → Test t de Student
+
+Nuevamente, el resultado se interpreta con el p-valor del test:
+
+::: {.callout-tip appearance="simple" icon="false"}
+### ¿Existe asociación?
+
+-   Si **p \< 0.05**, se detecta una diferencia significativa entre los grupos.
+
+<!-- -->
+
+-   Si **p ≥ 0.05**, no hay evidencia estadística de diferencia.
+:::
+
+#### Relación entre dos variables **numéricas**
+
+Cuando ambas variables son numéricas, se verifica su distribución con el **test de Shapiro-Wilk**. En función de los resultados, se selecciona el test de correlación apropiado:
+
+-   `Si ambas variables NO son normales` → Correlación de Spearman
+
+-   `Si ambas variables son normales` → Correlación de Pearson
+
+::: {.callout-important appearance="simple" icon="false"}
+### Importante
+
+Para aplicar el test de Pearson, **ambas variables deben seguir distribución normal**. Es decir, **ambas** deben tener **p ≥ 0.05** en el test de Shapiro-Wilk.
+:::
+
+Finalmente, el p-valor del test de correlación nos indicará si existe una relación estadísticamente significativa entre ambas variables.
+
+### Aplicación teórica - Análisis bivariante
+
+Procedemos con el uso de la función implementada para ver la asociación correspondiente de cada una de las variables con la objetivo.
+
+::: panel-tabset
+#### Presión en reposo {.panel-tabset}
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","presion_reposo")
+```
+
+```{r, echo=FALSE, results='asis', warning=FALSE}
+resultado <- detectar_asociacion(data,"Enfermedad","presion_reposo")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Colesterol {.panel-tabset}
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","colesterol")
+```
+
+```{r, echo=FALSE, results='asis', warning=FALSE}
+resultado <- detectar_asociacion(data,"Enfermedad","colesterol")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Frecuencia cardíaca máxima {.panel-tabset}
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","frec_max")
+```
+
+```{r, echo=FALSE, results='asis', warning=FALSE}
+resultado <- detectar_asociacion(data,"Enfermedad","frec_max")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Descenso del segmento ST {.panel-tabset}
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","descenso_st")
+```
+
+```{r, echo=FALSE, results='asis', warning=FALSE}
+resultado <- detectar_asociacion(data,"Enfermedad","descenso_st")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Edad
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","edad")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(data,"Enfermedad","edad")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Sexo
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","sexo")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(data,"Enfermedad","sexo")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Tipo de dolor de pecho
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","tipo_dolor_pecho")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(data,"Enfermedad","tipo_dolor_pecho")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Glucosa en ayunas
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","glucosa_ayunas")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(data,"Enfermedad","glucosa_ayunas")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Electrocardiograma en reposo {.panel-tabset}
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","ecg_reposo")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(data,"Enfermedad","ecg_reposo")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Presencia de angina inducida por ejercicio {.panel-tabset}
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","angina_ejercicio")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(data,"Enfermedad","angina_ejercicio")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+
+#### Pendiente del ST
+
+```{r, eval=FALSE}
+detectar_asociacion(data,"Enfermedad","pendiente_st")
+```
+
+```{r, echo=FALSE, results='asis'}
+resultado <- detectar_asociacion(data,"Enfermedad","pendiente_st")
+
+# Mostrar texto
+cat("```\n", paste(resultado$texto, collapse = "\n"), "\n```")
+
+```
+
+```{r, echo=FALSE}
+resultado$grafico
+```
+:::
+
+Como podemos observar, según esta implementación, todas las variables se encuentran asociadas significativamente a la variable objetivo `Enfermedad`.
+
+### Explicación teórica - Análisis multivariante
+
+Con el objetivo de construir modelos que sean **eficientes, interpretables y clínicamente relevantes**, se implementarán técnicas de selección automática de variables. Estas técnicas permiten identificar un subconjunto óptimo de predictores basado en su contribución al modelo y a la explicación del evento `Enfermedad`.
+
+Se utilizarán tres enfoques clásicos:
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Selección hacia adelante (Forward Selection)
+
+Parte de un modelo vacío e incorpora variables **una por una**, eligiendo en cada paso aquella que más mejora el modelo (según un criterio como AIC o BIC).
+
+Ventaja: útil cuando hay muchas variables y se busca simplicidad.
+:::
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Selección hacia atrás (Backward Elimination)
+
+Parte de un modelo completo (con todas las variables) y elimina **progresivamente** las variables menos útiles.
+
+Ventaja: considera la interacción total de las variables desde el inicio.
+:::
+
+::: {.callout-tip appearance="simple" icon="false"}
+## Selección bidireccional (Stepwise)
+
+Combina ambos métodos: puede añadir o quitar variables en cada paso, dependiendo de si mejoran o no el modelo.
+
+Ventaja: más flexible y generalmente logra modelos equilibrados.
+:::
+
+#### Evaluación del Modelo
+
+El modelo se evaluará en función de:
+
+-   Criterios de información (AIC / BIC).
+
+-   Calidad del ajuste (pseudo-R², estadísticos de bondad de ajuste).
+
+-   Interpretabilidad clínica y parsimonia del modelo.
+
+Esto permitirá determinar qué variables resultan más útiles.
+
+### Aplicación teórica - Análisis multivariante
+
+::: panel-tabset
+#### Forward Selection
+
+```{r, eval=FALSE}
+# Modelo completo (todas las variables explicativas)
+mod_completo <- glm((Enfermedad == "Sí") * 1 ~ ., data = data, 
+                    family = binomial("logit"))
+
+# Modelo básico (solo intercepto)
+mod_basico <- glm((Enfermedad == "Sí") * 1 ~ 1, data = data, 
+                  family = binomial("logit"))
+
+# Selección hacia adelante (forward)
+mod_forward <- stepAIC(mod_basico, direction = "forward", 
+                        scope = list(lower = mod_basico,
+                                     upper = mod_completo))
+```
+
+```{r, echo=FALSE}
+# Modelo completo (todas las variables explicativas)
+mod_completo <- glm((Enfermedad == "Sí") * 1 ~ ., data = data, 
+                    family = binomial("logit"))
+
+# Modelo básico (solo intercepto)
+mod_basico <- glm((Enfermedad == "Sí") * 1 ~ 1, data = data, 
+                  family = binomial("logit"))
+
+
+# Captura de salida del stepAIC
+salida <- capture.output({
+  mod_forward <- stepAIC(mod_basico, direction = "forward", 
+                        scope = list(lower = mod_basico,
+                                     upper = mod_completo))
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+#### Backward Elimination
+
+```{r, eval=FALSE}
+# Modelo completo (todas las variables explicativas)
+mod_completo <- glm((Enfermedad == "Sí") * 1 ~ ., data = data, 
+                    family = binomial("logit"))
+
+# Modelo básico (solo intercepto)
+mod_basico <- glm((Enfermedad == "Sí") * 1 ~ 1, data = data, 
+                  family = binomial("logit"))
+
+# APLICACIÓN DEL AJUSTE
+mod_backward <- stepAIC(mod_completo, direction = "backward", 
+                         scope = list(lower = mod_basico,
+                                      upper = mod_completo))
+```
+
+```{r, echo=FALSE}
+# Modelo completo (todas las variables explicativas)
+mod_completo <- glm((Enfermedad == "Sí") * 1 ~ ., data = data, 
+                    family = binomial("logit"))
+
+# Modelo básico (solo intercepto)
+mod_basico <- glm((Enfermedad == "Sí") * 1 ~ 1, data = data, 
+                  family = binomial("logit"))
+
+# Captura de salida del stepAIC
+salida <- capture.output({
+mod_backward <- stepAIC(mod_completo, direction = "backward", 
+                         scope = list(lower = mod_basico,
+                                      upper = mod_completo))
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+#### Stepwise
+
+```{r, eval=FALSE}
+# Modelo completo (todas las variables explicativas)
+mod_completo <- glm((Enfermedad == "Sí") * 1 ~ ., data = data, 
+                    family = binomial("logit"))
+
+# Modelo básico (solo intercepto)
+mod_basico <- glm((Enfermedad == "Sí") * 1 ~ 1, data = data, 
+                  family = binomial("logit"))
+
+# APLICACIÓN DEL AJUSTE
+mod_stepwise <- stepAIC(mod_completo, direction = "both")
+```
+
+```{r, echo=FALSE}
+# Modelo completo (todas las variables explicativas)
+mod_completo <- glm((Enfermedad == "Sí") * 1 ~ ., data = data, 
+                    family = binomial("logit"))
+
+# Modelo básico (solo intercepto)
+mod_basico <- glm((Enfermedad == "Sí") * 1 ~ 1, data = data, 
+                  family = binomial("logit"))
+
+# Captura de salida del stepAIC
+salida <- capture.output({
+  mod_stepwise <- stepAIC(mod_completo, direction = "both")
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+:::
+
+En cuanto al resumen de cada uno de los ajustes:
+
+::: panel-tabset
+## Forward Selection
+
+```{r, eval=FALSE}
+summary(mod_forward)
+```
+
+```{r, echo=FALSE}
+# Captura de salida del stepAIC
+salida <- capture.output({
+  summary(mod_forward)
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+## Backward Elimination
+
+```{r, eval=FALSE}
+summary(mod_backward)
+```
+
+```{r,echo=FALSE}
+# Captura de salida del stepAIC
+salida <- capture.output({
+  summary(mod_backward)
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+
+## Stepwise
+
+```{r, eval=FALSE}
+summary(mod_stepwise)
+```
+
+```{r,echo=FALSE}
+# Captura de salida del stepAIC
+salida <- capture.output({
+  summary(mod_stepwise)
+})
+
+# Mostrarlo como bloque de código
+cat("```\n", paste(salida, collapse = "\n"), "\n```")
+```
+:::
+
+Vemos como según estas técnicas de selección de variables del tipo **wrapper**, la fórmula óptima contiene a todas las variables predictoras. Esto supone que debemos de escoger a todas las variables para construir los modelos predictivos, teóricamente. Para poder comprobar esto evaluaremos el modelo con dos funciones que automatizan este proceso.
+
+::: panel-tabset
+## Gráfico
+
+```{r, message=FALSE}
+evaluar_modelo(mod_forward, datos_validacion = data, variable_respuesta = "Enfermedad")
+```
+
+## Matriz de confusión - Umbral 0.8
+
+```{r}
+confusion_matrix_plot(mod_forward, data, "Enfermedad", 0.8)
+```
+
+## Matriz de confusión - Umbral 0.5
+
+```{r}
+confusion_matrix_plot(mod_forward, data, "Enfermedad", 0.5)
+```
+:::
+
+Con un **umbral de clasificación de 0.8**, el modelo presenta un **AUC de 0.833**, lo que indica una buena capacidad para discriminar entre casos positivos y negativos. No obstante, este umbral conservador implica una alta exigencia para etiquetar un caso como positivo, lo que se refleja en una **alta precisión pero baja sensibilidad**: de los 318 pacientes clasificados como positivos, 281 fueron verdaderos positivos (88.4%), pero se dejaron sin detectar 364 casos positivos (falsos negativos). Es decir, el modelo identifica con seguridad los positivos que predice, pero **pasa por alto más de la mitad de los positivos reales**.
+
+Al ajustar el umbral de decisión a **0.5**, el modelo mejora notablemente su capacidad de detección. En este escenario, la **sensibilidad aumenta**, permitiendo identificar **490 verdaderos positivos**, aunque a costa de un mayor número de falsos positivos (137).
+
+Este nuevo balance ofrece **mayor cobertura de los casos positivos (recall ≈ 76%)**, aunque con una reducción en la precisión (≈ 78%). En conjunto, el ajuste del umbral permite adaptar el modelo a distintos objetivos clínicos: **un umbral alto favorece la precisión**, mientras que **un umbral más bajo mejora la detección**, aspecto clave en contextos donde **es más crítico identificar todos los casos positivos, incluso al costo de algunos falsos positivos**.
+
+## Metodología de modelado
+
+En esta sección se va a proceder con la implementación de los modelos de regresión logística, árboles de decisión, máquinas de vectores de soporte y redes neuronales artificiales utilizando técnicas de selección de variables del tipo filtro, wrapper o embedded
+
+### Técnicas de selección de variables
+
+::: panel-tabset
+## Filtrado
+
+Los **métodos de filtrado** (filter methods) se basan en criterios estadísticos o métricas independientes del modelo predictivo. Estos métodos evalúan cada variable de forma individual, sin considerar las relaciones entre ellas, utilizando medidas como la correlación, la varianza, el valor p de pruebas estadísticas o la información mutua. Su principal ventaja radica en su rapidez y bajo costo computacional, lo que los hace apropiados como un paso preliminar en el análisis. No obstante, su limitación es que no consideran posibles interacciones entre variables ni su efecto conjunto en el desempeño del modelo.
+
+```{r}
+metodo_filtrado <- function(data, variable_evento) {
+  # Eliminar la variable evento de la lista de columnas
+  variables <- setdiff(names(data), variable_evento)
+  variables_asociadas <- c()
+  
+  for (var in variables) {
+    resultado <- detectar_asociacion(data, variable_evento, var)
+    
+    # Si se detecta asociación
+    if (any(grepl("Existe asociación estadísticamente significativa entre las variables.", resultado))) {
+      variables_asociadas <- c(variables_asociadas, var)
+    }
+  }
+  return(variables_asociadas)
+}
+ 
+variables <- metodo_filtrado(data, "Enfermedad")
+```
+```{r, echo=FALSE}
+
+variables <- c(
+  "edad", "sexo", "tipo_dolor_pecho", "glucosa_ayunas",
+  "ecg_reposo", "angina_ejercicio", "pendiente_st",
+  "presion_reposo", "colesterol", "frec_max", "descenso_st"
+)
+
+# Convertir a data frame (una columna)
+tabla <- data.frame(Variable = variables)
+
+# Mostrar con estilos usando kableExtra
+tabla %>%
+  kbl(align = "l") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = F) %>%
+  row_spec(0, background = "#002859", color = "white") %>%  # Encabezado
+  row_spec(1:nrow(tabla), background = "#00AEDA", color = "black")%>%
+  scroll_box(height = "200px")
+```
+
+## Envoltorios
+
+Los **métodos envoltorio** (wrapper methods) evalúan subconjuntos de variables mediante la construcción iterativa de modelos predictivos. A través de estrategias como la selección progresiva (forward), la eliminación progresiva (backward) o procedimientos mixtos (stepwise), estos métodos identifican el subconjunto que maximiza el rendimiento del modelo en una métrica determinada, como la exactitud o el AUC. Aunque estos enfoques suelen ofrecer buenos resultados, su principal desventaja es el elevado costo computacional, especialmente cuando se trabaja con un gran número de variables. Además, presentan un mayor riesgo de sobreajuste si no se aplican junto con técnicas de validación adecuadas.
+
+```{r}
+metodo_envoltorio <- function(data, variable_evento) {
+  variables <- setdiff(names(data), variable_evento)
+  formula_nula <- as.formula(paste(variable_evento, "~ 1"))
+  formula_completa <- as.formula(paste(variable_evento, "~", paste(variables, collapse = " + ")))
+
+  modelo_nulo <- glm(formula_nula, data = data, family = binomial)
+  modelo_completo <- glm(formula_completa, data = data, family = binomial)
+
+  modelo_seleccionado <- step(modelo_nulo, scope = list(lower = modelo_nulo, upper = modelo_completo),
+                              direction = "forward", trace = 0)
+
+  variables_seleccionadas <- all.vars(formula(modelo_seleccionado))[-1]
+
+  return(variables_seleccionadas)
+}
+
+variables <- metodo_envoltorio(data, "Enfermedad")
+```
+
+```{r, echo=FALSE}
+
+variables <- c(
+  "tipo_dolor_pecho", "descenso_st", "angina_ejercicio", "pendiente_st",
+  "sexo", "ecg_reposo", "colesterol", "edad", "frec_max"
+)
+
+# Convertir a data frame (una columna)
+tabla <- data.frame(Variable = variables)
+
+# Mostrar con estilos usando kableExtra
+tabla %>%
+  kbl(align = "l") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = F) %>%
+  row_spec(0, background = "#002859", color = "white") %>%  # Encabezado
+  row_spec(1:nrow(tabla), background = "#00AEDA", color = "black")%>%
+  scroll_box(height = "200px")
+```
+
+## Embebidos
+
+Los **métodos embebidos** (embedded methods) integran el proceso de selección de variables dentro del propio algoritmo de entrenamiento del modelo. Algoritmos como la regresión Lasso, los árboles de decisión, el Random Forest o métodos basados en regularización (como Elastic Net) seleccionan automáticamente las variables más relevantes en función de su contribución al ajuste del modelo. Estos métodos ofrecen un equilibrio entre eficacia y eficiencia computacional, y tienden a generar modelos más generalizables. Sin embargo, al estar ligados a un algoritmo específico, su aplicabilidad y los resultados pueden variar según el tipo de modelo utilizado.
+
+```{r}
+metodo_embebido <- function(data, variable_evento) {
+  y <- as.numeric(data[[variable_evento]] == "Sí")
+  
+  # Generar matriz del modelo
+  formula <- reformulate(setdiff(names(data), variable_evento))
+  X <- model.matrix(formula, data)[, -1]
+
+  # Ajustar modelo con Lasso
+  cv_lasso <- cv.glmnet(X, y, family = "binomial", alpha = 1, standardize = TRUE)
+
+  # Coeficientes con lambda óptimo
+  coef_lasso <- coef(cv_lasso, s = "lambda.min")
+  nombres_coef <- rownames(coef_lasso)
+  seleccionados <- which(coef_lasso != 0)
+  variables_seleccionadas <- nombres_coef[seleccionados]
+
+  # Excluir intercepto
+  variables_seleccionadas <- setdiff(variables_seleccionadas, "(Intercept)")
+
+  # Retornar nombres de columnas originales si es posible
+  nombres_originales <- setdiff(names(data), variable_evento)
+  seleccion_sin_dummies <- unique(gsub("`", "", sub("\\:.*", "", sub(".*\\(", "", variables_seleccionadas))))
+  seleccion_final <- intersect(nombres_originales, seleccion_sin_dummies)
+
+  return(seleccion_final)
+}
+
+variables <- metodo_embebido(data, "Enfermedad")
+```
+
+```{r, echo=FALSE}
+
+variables <- c("colesterol","frec_max","descenso_st")
+
+# Convertir a data frame (una columna)
+tabla <- data.frame(Variable = variables)
+
+# Mostrar con estilos usando kableExtra
+tabla %>%
+  kbl(align = "l") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"), full_width = F) %>%
+  row_spec(0, background = "#002859", color = "white") %>%  # Encabezado
+  row_spec(1:nrow(tabla), background = "#00AEDA", color = "black")%>%
+  scroll_box(height = "200px")
+```
+
+:::
+
+### Validación Cruzada 5x2
+
+La **validación cruzada 5x2** es una técnica que combina los principios de la validación cruzada y la replicación para obtener una estimación más robusta y confiable del rendimiento de un modelo predictivo. En este método, el conjunto de datos se divide aleatoriamente en **dos pliegues (2-fold)**, lo que implica que en cada iteración el modelo se entrena sobre el 50% de los datos y se evalúa sobre el 50% restante. A diferencia de la validación cruzada simple, este procedimiento se **repite dos veces por cada partición**, intercambiando los roles de entrenamiento y prueba.
+
+Lo que distingue a esta técnica es que este proceso **se repite cinco veces con diferentes particiones aleatorias**, es decir, se realizan **cinco particiones independientes** del conjunto de datos en dos mitades, lo que da lugar a **un total de diez ejecuciones** del modelo (dos por cada una de las cinco divisiones). Por ello, el número 5 en "5x2" hace referencia a los **cinco pliegues independientes** a realizar, y el 2 indica que **cada pliegue se repite dos veces**, invirtiendo los conjuntos de entrenamiento y prueba.
+
+Este enfoque tiene como objetivo reducir la **variabilidad debida a la aleatoriedad en el particionado** de los datos y proporciona una estimación más estable del rendimiento que una única partición. Además, al contar con múltiples medidas, permite comparar modelos mediante pruebas estadísticas más fiables, como el test t de Dietterich.
+
+### Implementación de métodos
+
+::: panel-tabset
+## Regresión Logística
+
+::: panel-tabset
+## CV 5x2 - Sin Selección
+
+```{r, message=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = glm, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = NULL,
+  hiperparametros = data.frame()
+)
+```
+
+## CV 5x2 - Con Filtro
+
+```{r, message=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = glm, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_filtrado,
+  hiperparametros = data.frame()
+)
+```
+
+## CV 5x2 - Con Wrapper
+
+```{r, message=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = glm, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_envoltorio,
+  hiperparametros = data.frame()
+)
+```
+
+## CV 5x2 - Con Embedded
+
+```{r, message=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = glm, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_embebido,
+  hiperparametros = data.frame()
+)
+```
+:::
+
+## Redes Neuronales Artificiales
+
+::: panel-tabset
+## CV 5x2 - Sin Selección
+
+```{r, message=FALSE, warning=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = nnet, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = NULL,
+  hiperparametros = expand.grid(
+    size = c(5, 15, 20),
+    decay = c(0.01, 0.5, 0.001),
+    maxit = c(225, 5, 20, 100)
+  )
+
+)
+```
+
+## CV 5x2 - Con Filtro
+
+```{r, message=FALSE, warning=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = nnet, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_filtrado,
+  hiperparametros = expand.grid(
+    size = c(5, 15, 20),
+    decay = c(0.01, 0.5, 0.001),
+    maxit = c(225, 5, 20, 100)
+  )
+
+)
+```
+
+## CV 5x2 - Con Wrapper
+
+```{r, message=FALSE, warning=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = nnet, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_envoltorio,
+  hiperparametros = expand.grid(
+    size = c(5, 15, 20),
+    decay = c(0.01, 0.5, 0.001),
+    maxit = c(225, 5, 20, 100)
+  )
+
+)
+```
+
+## CV 5x2 - Con Embedded
+
+```{r, message=FALSE, warning=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = nnet, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_embebido,
+  hiperparametros = expand.grid(
+    size = c(5, 15, 20),
+    decay = c(0.01, 0.5, 0.001),
+    maxit = c(225, 5, 20, 100)
+  )
+
+)
+```
+:::
+
+## Árboles de Decisión
+
+::: panel-tabset
+## CV 5x2 - Sin Selección
+
+```{r, message=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = rpart, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = NULL,
+  hiperparametros = expand.grid(cp = c(0.01, 0.05, 0.1),
+                              minsplit = c(5, 10, 20),
+                              minbucket = c(5, 10, 20))
+)
+```
+
+## CV 5x2 - Con Filtro
+
+```{r, message=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = rpart, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_filtrado,
+  hiperparametros = expand.grid(cp = c(0.01, 0.05, 0.1),
+                              minsplit = c(5, 10, 20),
+                              minbucket = c(5, 10, 20))
+)
+```
+
+## CV 5x2 - Con Wrapper
+
+```{r, message=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = rpart, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_envoltorio,
+  hiperparametros = expand.grid(cp = c(0.01, 0.05, 0.1),
+                              minsplit = c(5, 10, 20),
+                              minbucket = c(5, 10, 20))
+)
+```
+
+## CV 5x2 - Con Embedded
+
+```{r, message=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = rpart, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_embebido,
+  hiperparametros = expand.grid(cp = c(0.01, 0.05, 0.1),
+                              minsplit = c(5, 10, 20),
+                              minbucket = c(5, 10, 20))
+)
+```
+:::
+
+## Máquinas de Soporte de Vectores
+
+::: panel-tabset
+## CV 5x2 - Sin Selección
+
+```{r, message=FALSE, warning=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = svm, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = NULL,
+  hiperparametros = expand.grid(
+  cost = c(1, 10, 100),
+  gamma = c(0.01, 0.1),
+  kernel = c("linear", "radial")
+)
+)
+```
+
+## CV 5x2 - Con Filtro
+
+```{r, message=FALSE, warning=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = svm, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_filtrado,
+  hiperparametros = expand.grid(
+  cost = c(1, 10, 100),
+  gamma = c(0.01, 0.1),
+  kernel = c("linear", "radial")
+)
+)
+```
+
+## CV 5x2 - Con Wrapper
+
+```{r, message=FALSE,warning=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = svm, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_envoltorio,
+hiperparametros = expand.grid(
+  cost = c(1, 10, 100),
+  gamma = c(0.01, 0.1),
+  kernel = c("linear", "radial")
+)
+)
+```
+
+## CV 5x2 - Con Embedded
+
+```{r, message=FALSE,warning=FALSE}
+CV_5x2(
+  datos = data, 
+  algoritmo = svm, 
+  formula = Enfermedad ~ ., 
+  tecnica_seleccion = metodo_embebido,
+  hiperparametros = expand.grid(
+  cost = c(1, 10, 100),
+  gamma = c(0.01, 0.1),
+  kernel = c("linear", "radial")
+)
+)
+```
+:::
+:::
+
+### Diagrama de flujo
+
+```{r}
+library(DiagrammeR)
+
+grViz("
+digraph flujo_modelado {
+
+  graph [layout = dot, rankdir = UD, nodesep = 1, ranksep = 1.2]
+
+  node [shape = box, style = filled, color = '#002859', fontcolor = white, 
+        fillcolor = '#00AEDA', fontsize = 18, width = 3, height = 1]
+
+  Preprocesamiento [label = 'Preprocesamiento de los datos']
+  Exploratorio [label = 'Análisis exploratorio']
+  Comparacion [label = 'Comparación de modelos\n(Selección de variables +\nValidación cruzada 5x2)']
+
+  Regresion [label = 'Regresión logística']
+  Arboles [label = 'Árboles de decisión']
+  SVM [label = 'Máquinas de soporte de vectores (SVM)']
+  RNA [label = 'Redes neuronales artificiales']
+
+  Despliegue [label = 'Despliegue del mejor modelo\nen una app web']
+
+  Preprocesamiento -> Exploratorio -> Comparacion
+  Comparacion -> Regresion
+  Comparacion -> Arboles
+  Comparacion -> SVM
+  Comparacion -> RNA
+
+  Regresion -> Despliegue
+  Arboles -> Despliegue
+  SVM -> Despliegue
+  RNA -> Despliegue
+}
+")
+
+```

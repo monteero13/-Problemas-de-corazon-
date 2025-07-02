@@ -1,0 +1,43 @@
+# Resultados {.unnumbered}
+
+## Rendimiento de los modelos
+
+La siguiente tabla recoge la media de métricas de cada implementación con cada algoritmo de aprendizaje profundo y los respectivos métodos de selección utilizados.
+
+```{r, warning=FALSE, echo=FALSE, message=FALSE}
+library(DT)
+library(kableExtra)
+library(dplyr)
+library(knitr)
+
+# Crear data frame con tus resultados
+tabla_modelos <- data.frame(
+  Implementación = c("Regresión Logística - Sin selección", "Regresión Logística - Con Filtro", "Regresión Logística - Con Wrapper", "Regresión Logística - Con Embedded", "Redes Neuronales Artificiales - Sin selección", "Redes Neuronales Artificiales - Con Filtro", "Redes Neuronales Artificiales - Con Wrapper", "Redes Neuronales Artificiales - Con Embedded", "Árboles de Decisión - Sin selección", "Árboles de Decisión - Con Filtro", "Árboles de Decisión - Con Wrapper", "Árboles de Decisión - Con Embedded", "Máquinas de Soporte de Vectores - Sin selección", "Máquinas de Soporte de Vectores - Con Filtro", "Máquinas de Soporte de Vectores - Con Wrapper", "Máquinas de Soporte de Vectores - Con Embedded"),
+  AUC = c(0.819, 0.82, 0.817, 0.725, 0.825, 0.817, 0.819, 0.701, 0.76, 0.766, 0.768, 0.684, 0.82, 0.82, 0.816, 0.727),
+  Accuracy = c(0.742, 0.745, 0.742, 0.664, 0.747,	0.744, 0.75, 0.631, 0.729, 0.732, 0.731, 0.648, 0.745, 0.747, 0.747, 0.658),
+  Recall = c(0.758, 0.76, 0.758, 0.681, 0.757, 0.749, 0.741, 0.626, 0.736, 0.744, 0.724, 0.588, 0.767, 0.763, 0.763, 0.662),
+  Specificity = c(0.723, 0.728, 0.725, 0.646, 0.735, 0.739, 0.76, 0.637, 0.721, 0.718, 0.739, 0.716, 0.719, 0.73, 0.728, 0.654)
+)
+
+tabla_final <- tabla_modelos %>%
+  arrange(desc(AUC), desc(Accuracy), desc(Recall), desc(Specificity))
+
+tabla_final %>%
+  kbl() %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = FALSE
+  ) %>%
+  row_spec(0, background = "#002859", color = "white") %>%  # encabezado
+  row_spec(1:nrow(tabla_modelos), background = "#00AEDA", color = "black")%>%
+  scroll_box(height = "200px") # scroll vertical si hay muchas filas 
+
+```
+
+## Selección del modelo final
+
+Finalmente, el mejor modelo conseguido ha sido el de Redes Neuronales Artificiales sin selección de variables. Esto se debe a obtener el mayor **AUC** con 0.825 frente a las demás implementaciones. 
+
+Con este modelo, debemos de contar con el uso de las variables: **Edad, Sexo, Tipo de dolor de pecho, Presión arterial en reposo, Colesterol, Glucosa en ayunas, Electrocardiograma en reposo, Frecuencia cardíaca máxima, Presencia de angina inducida por ejercicio, Descenso del segmento ST, Pendiente del ST, Enfermedad**.
+
+Este modelo va a ser utilizado para generar el despliegue de una aplicación predictiva muy interesante.

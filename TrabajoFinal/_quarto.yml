@@ -1,0 +1,45 @@
+project:
+  type: book
+
+book:
+  title: "¿Problemas de Corazón? Así Puede Ayudar la Ciencia de Datos a Detectarlos a Tiempo"
+  favicon: recursos/umalogo.png
+  page-footer: 
+    left: © 2025 Alberto Montero
+    right: Proyecto Final Minería de Datos
+  page-navigation: false
+  sidebar: 
+    search: false
+    logo: recursos/escuelalogo.png
+  chapters:
+    - index.qmd
+    - MaterialesMetodos.qmd
+    - Resultados.qmd
+    - Discusion.qmd
+    - Conclusiones.qmd
+    - DespliegueApp.qmd
+    - Referencias.qmd
+bibliography: recursos/references.bib
+
+format:
+  html:
+    theme: default
+    css: recursos/estilo.css
+    search: false
+    number-sections: false
+    toc: true
+    toc-title: "Contenidos"
+    toc-depth: 3
+    code-fold: true
+    code-tools: false
+    code-copy: true
+    code-overflow: wrap
+    code-block-bg: true
+    fig-cap-location: top
+    smooth-scroll: true
+    link-external-icon: true
+    link-external-newwindow: true
+    include-in-header: recursos/theme-toggle.html
+    linkcolor: white
+    
+

@@ -1,0 +1,1 @@
+Para abrir el libro en HTML debe acceder desde la carpeta _book y abrir el index.html

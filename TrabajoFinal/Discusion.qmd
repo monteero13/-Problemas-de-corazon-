@@ -1,0 +1,9 @@
+# Discusión
+
+## Interpretación clínica o práctica de los resultados.
+
+Desde una perspectiva clínica, el modelo permite anticipar la probabilidad de enfermedad cardiovascular en un paciente a partir de variables accesibles en la práctica médica habitual, como edad, presión arterial o resultados de electrocardiograma. Esto puede apoyar a los profesionales de la salud en la toma de decisiones tempranas y mejorar la estratificación del riesgo cardiovascular. El hecho de no haber realizado una selección de variables y aún así lograr un alto rendimiento, refuerza la idea de que la interacción entre múltiples factores clínicos aporta valor predictivo incluso cuando cada uno, por separado, puede no ser concluyente.
+
+## Limitaciones del modelo.
+
+A pesar de los resultados prometedores, el modelo presenta algunas limitaciones importantes. En primer lugar, la falta de selección de variables puede afectar la interpretabilidad clínica del modelo, un aspecto crítico en entornos médicos. Además, si bien el AUC es alto, no se garantiza que el modelo tenga un buen rendimiento en todas las subpoblaciones, especialmente si el dataset original presenta sesgos (por ejemplo, en cuanto a edad, género o prevalencia de la enfermedad). Otro punto a considerar es que el modelo no ha sido validado externamente con datos de otras clínicas o regiones, lo que limita su generalización.
