@@ -1,2 +1,3 @@
-# -Problemas-de-corazon-
-Proyecto final de Mineria de Datos donde se encuentran las mejores variables de estudio para un conjunto de datos y se desarrolla una mini aplicación web que utiliza el modelo predictivo óptimo para la respuesta de los pacientes.
+Puede acceder al contenido total del libro sin necesidad de descargar algún recurso con el siguiente enlace:
+
+[![Ver en GitHub Pages](https://img.shields.io/badge/Libro-blue?logo=github)](https://monteero13.github.io/MineriadeDatos/)
