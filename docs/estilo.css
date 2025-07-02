@@ -1,0 +1,95 @@
+/* ---- Títulos ---- */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Segoe UI', sans-serif;
+  font-weight: 600;
+  color: var(--title-color, #002859);
+}
+
+/* ---- Imágenes ---- */
+img {
+  max-width: 100%;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: transform 0.3s ease;
+}
+
+img:hover {
+  transform: scale(1.02);
+}
+
+/* ---- Código ---- */
+pre, code {
+  font-family: 'Fira Code', monospace;
+  background-color: var(--code-bg, #f5f5f5);
+  padding: 0.5em;
+  border-radius: 6px;
+}
+
+/* ---- Sidebar ---- */
+.sidebar {
+  background-color: var(--sidebar-bg, #f0f0f0);
+  padding: 1em;
+}
+
+/* ---- Footer y Header ---- */
+footer, header {
+  background-color: var(--header-footer-bg, #e0e0e0);
+  padding: 0.8em;
+  text-align: center;
+  font-size: 0.9em;
+}
+
+/* ---- Botón de cambio de tema ---- */
+#theme-toggle {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  z-index: 1000;
+}
+
+#theme-toggle svg {
+  width: 24px;
+  height: 24px;
+  stroke: var(--icon-color, #333);
+  transition: stroke 0.3s ease;
+}
+
+#theme-toggle:hover svg {
+  stroke: #00AEDA;
+}
+
+/* Tema oscuro */
+.dark-theme {
+  --title-color: #E0E0E0;
+  --code-bg: #1e1e1e;
+  --sidebar-bg: #1a1a1a;
+  --header-footer-bg: #121212;
+  --icon-color: #e0e0e0;
+  background-color: #121212;
+  color: #e0e0e0;
+}
+
+.dark-theme img {
+  box-shadow: 0 2px 8px rgba(255, 255, 255, 0.1);
+}
+
+#theme-toggle svg {
+  width: 26px;
+  height: 26px;
+  stroke: var(--icon-color, #333);
+  fill: none;
+  transition: stroke 0.3s ease, fill 0.3s ease;
+}
+
+.dark-theme #theme-toggle svg {
+  stroke: #E0E0E0;
+  fill: none;
+}
+
+#theme-toggle:hover svg {
+  stroke: #00AEDA;
+}
+
